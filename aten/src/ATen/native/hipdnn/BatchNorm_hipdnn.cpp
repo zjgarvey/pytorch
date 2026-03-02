@@ -60,6 +60,7 @@ std::tuple<Tensor, Tensor, Tensor> hipdnn_batch_norm_backward(
 #include <ATen/hipdnn/Types.h>
 #include <ATen/hipdnn/Handle.h>
 #include <ATen/hipdnn/Exceptions.h>
+#include <ATen/hipdnn/Utils.h>
 
 #include <ATen/TensorUtils.h>
 
@@ -76,15 +77,6 @@ Tensor expandScale(const Tensor& t, int64_t dim) {
 }
 
 }  // namespace
-
-inline std::shared_ptr<hipdnn_frontend::graph::Tensor_attributes>
-    createTensorAttributes(const Tensor& t)
-{
-    auto tensor = std::make_shared<hipdnn_frontend::graph::Tensor_attributes>();
-    tensor->set_dim(t.sizes().vec()).set_data_type(getHipdnnDataType(t));
-    tensor->set_stride(t.strides().vec());
-    return tensor;
-}
 
 std::tuple<Tensor, Tensor, Tensor> hipdnn_batch_norm(
     const Tensor& input_t, const Tensor& weight_t, const std::optional<Tensor>& bias_t_opt, const std::optional<Tensor>& running_mean_t_opt, const std::optional<Tensor>& running_var_t_opt,
