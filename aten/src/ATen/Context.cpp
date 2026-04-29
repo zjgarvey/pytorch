@@ -350,12 +350,12 @@ void Context::setImmediateMiopen(bool b) {
   immediate_miopen = b;
 }
 
-bool Context::userEnabledHipdnn() const {
-  return enabled_hipdnn;
+bool Context::userMiopenUseHipdnn() const {
+  return miopen_use_hipdnn;
 }
 
-void Context::setUserEnabledHipdnn(bool e) {
-  enabled_hipdnn = e;
+void Context::setUserMiopenUseHipdnn(bool e) {
+  miopen_use_hipdnn = e;
 }
 
 bool Context::allowTF32CuBLAS() const {

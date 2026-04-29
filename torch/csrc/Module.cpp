@@ -1358,24 +1358,24 @@ static PyObject* THPModule_immediateMiopen(
   Py_RETURN_FALSE;
 }
 
-static PyObject* THPModule_setUserEnabledHipdnn(
+static PyObject* THPModule_setUserMiopenUseHipdnn(
     PyObject* _unused,
     PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
       PyBool_Check(arg),
-      "set_hipdnn_enabled expects a bool, "
+      "set_miopen_use_hipdnn expects a bool, "
       "but got ",
       THPUtils_typename(arg));
-  at::globalContext().setUserEnabledHipdnn(arg == Py_True);
+  at::globalContext().setUserMiopenUseHipdnn(arg == Py_True);
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject* THPModule_userEnabledHipdnn(
+static PyObject* THPModule_userMiopenUseHipdnn(
     PyObject* _unused,
     PyObject* noargs) {
-  if (at::globalContext().userEnabledHipdnn()) {
+  if (at::globalContext().userMiopenUseHipdnn()) {
     Py_RETURN_TRUE;
   }
   Py_RETURN_FALSE;
@@ -2020,8 +2020,14 @@ static std::initializer_list<PyMethodDef> TorchMethods = {
      nullptr},
     {"_get_miopen_immediate", THPModule_immediateMiopen, METH_NOARGS, nullptr},
     {"_set_miopen_immediate", THPModule_setImmediateMiopen, METH_O, nullptr},
-    {"_get_hipdnn_enabled", THPModule_userEnabledHipdnn, METH_NOARGS, nullptr},
-    {"_set_hipdnn_enabled", THPModule_setUserEnabledHipdnn, METH_O, nullptr},
+    {"_get_miopen_use_hipdnn",
+     THPModule_userMiopenUseHipdnn,
+     METH_NOARGS,
+     nullptr},
+    {"_set_miopen_use_hipdnn",
+     THPModule_setUserMiopenUseHipdnn,
+     METH_O,
+     nullptr},
     {"_get_cudnn_deterministic",
      THPModule_deterministicCuDNN,
      METH_NOARGS,
@@ -2654,9 +2660,7 @@ Call this whenever a new thread is created in order to propagate values from
           "Winograd3x3Depthwise", at::native::ConvBackend::Winograd3x3Depthwise)
       .value("Xnnpack2d", at::native::ConvBackend::Xnnpack2d)
       .value("Mps", at::native::ConvBackend::Mps)
-      .value("MpsTranspose,", at::native::ConvBackend::MpsTranspose)
-      .value("Hipdnn", at::native::ConvBackend::Hipdnn)
-      .value("HipdnnTranspose", at::native::ConvBackend::HipdnnTranspose);
+      .value("MpsTranspose,", at::native::ConvBackend::MpsTranspose);
 
   py_module.def(
       "_select_conv_backend",

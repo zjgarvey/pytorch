@@ -1203,8 +1203,8 @@ def set_num_interop_threads(
 ) -> None: ...  # THPModule_setNumInteropThreads
 def _get_cudnn_enabled() -> _bool: ...  # THPModule_userEnabledCuDNN
 def _set_cudnn_enabled(arg: _bool) -> None: ...  # THPModule_setUserEnabledCuDNN
-def _get_hipdnn_enabled() -> _bool: ...  # THPModule_userEnabledHipdnn
-def _set_hipdnn_enabled(arg: _bool) -> None: ...  # THPModule_setUserEnabledHipdnn
+def _get_miopen_use_hipdnn() -> _bool: ...  # THPModule_userMiopenUseHipdnn
+def _set_miopen_use_hipdnn(arg: _bool) -> None: ...  # THPModule_setUserMiopenUseHipdnn
 def _get_flash_sdp_enabled() -> _bool: ...  # THPModule_userEnabledFusedSDP
 def _set_sdp_use_flash(arg: _bool) -> None: ...  # THPModule_setSDPUseFlash
 def _get_fa3_sdp_enabled() -> _bool: ...  # THPModule_userEnabledFA3SDP

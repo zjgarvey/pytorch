@@ -3,14 +3,15 @@
 #include <ATen/ATen.h>
 #include <miopen/version.h>
 
-namespace at { namespace native {
+namespace at::native {
 
-miopenDataType_t getMiopenDataType(const at::Tensor& tensor) {
+template <>
+miopenDataType_t getDataType<miopenDataType_t>(const at::Tensor& tensor) {
   if (tensor.scalar_type() == at::kFloat) {
     return miopenFloat;
   } else if (tensor.scalar_type() == at::kHalf) {
     return miopenHalf;
-  }  else if (tensor.scalar_type() == at::kBFloat16) {
+  } else if (tensor.scalar_type() == at::kBFloat16) {
     return miopenBFloat16;
   }
   std::string msg("getMiopenDataType() not supported for ");
@@ -18,8 +19,13 @@ miopenDataType_t getMiopenDataType(const at::Tensor& tensor) {
   throw std::runtime_error(msg);
 }
 
-int64_t miopen_version() {
-  return (MIOPEN_VERSION_MAJOR<<8) + (MIOPEN_VERSION_MINOR<<4) + MIOPEN_VERSION_PATCH;
+miopenDataType_t getMiopenDataType(const at::Tensor& tensor) {
+  return getDataType<miopenDataType_t>(tensor);
 }
 
-}}  // namespace at::miopen
+int64_t miopen_version() {
+  return (MIOPEN_VERSION_MAJOR << 8) + (MIOPEN_VERSION_MINOR << 4) +
+      MIOPEN_VERSION_PATCH;
+}
+
+} // namespace at::native

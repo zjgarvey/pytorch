@@ -21,22 +21,137 @@
 #else // AT_ROCM_ENABLED && USE_HIPDNN
 
 #include <hipdnn_frontend.hpp>
-#include <ATen/hipdnn/Types.h>
-#include <ATen/hipdnn/Handle.h>
-#include <ATen/hipdnn/Exceptions.h>
-#include <ATen/hipdnn/Utils.h>
+#include <ATen/miopen/Handle.h>  // HandleTraits<H>, getHandle<H>()
+#include <ATen/miopen/Types.h>   // getDataType<LibDtype>()
 
 #include <ATen/TensorUtils.h>
 #include <ATen/native/ConvUtils.h>
 #include <ATen/native/utils/ParamsHash.h>
+#include <c10/hip/HIPStream.h>
+#include <c10/util/Exception.h>
 #include <c10/util/env.h>
 #include <c10/util/irange.h>
 
 #include <list>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 
+// ---------------------------------------------------------------------------
+// hipDNN helpers (formerly in aten/src/ATen/hipdnn/, inlined here as the sole
+// consumer until a second hipdnn op earns the directory back). Macros, the
+// exception class, the tensor-attributes helper, and the HandleTraits / dtype
+// specializations all live in this translation unit.
+// ---------------------------------------------------------------------------
+namespace c10 {
+
+class HipDNNError : public c10::Error {
+  using Error::Error;
+};
+
+} // namespace c10
+
+#define HIPDNN_CHECK(EXPR, ...)                                         \
+  do {                                                                  \
+    hipdnnStatus_t status = EXPR;                                       \
+    if (status != HIPDNN_STATUS_SUCCESS) {                              \
+      if (status == HIPDNN_STATUS_NOT_SUPPORTED) {                      \
+        TORCH_CHECK_WITH(                                               \
+            HipDNNError,                                                \
+            false,                                                      \
+            "hipDNN error: ",                                           \
+            hipdnnGetErrorString(status),                               \
+            ". This error may appear if you passed in a non-contiguous" \
+            " input.",                                                  \
+            ##__VA_ARGS__);                                             \
+      } else {                                                          \
+        TORCH_CHECK_WITH(                                               \
+            HipDNNError,                                                \
+            false,                                                      \
+            "hipDNN error: ",                                           \
+            hipdnnGetErrorString(status),                               \
+            ##__VA_ARGS__);                                             \
+      }                                                                 \
+    }                                                                   \
+  } while (0)
+
+#define HIPDNN_FE_CHECK(EXPR)          \
+  do {                                 \
+    auto error_object = EXPR;          \
+    if (!error_object.is_good()) {     \
+      TORCH_CHECK_WITH(                \
+          HipDNNError,                 \
+          false,                       \
+          "hipDNN Frontend error: ",   \
+          error_object.get_message()); \
+    }                                  \
+  } while (0)
+
 namespace at::native {
+
+template <>
+void HandleTraits<hipdnnHandle_t>::create(hipdnnHandle_t* handle) {
+  HIPDNN_CHECK(hipdnnCreate(handle));
+}
+
+template <>
+void HandleTraits<hipdnnHandle_t>::destroy(hipdnnHandle_t /*handle*/) {
+  // Intentionally not destroying the handle to avoid shutdown ordering issues.
+  // See miopen Handle.cpp's destroy specialization for context.
+}
+
+template <>
+void HandleTraits<hipdnnHandle_t>::setCurrentStream(hipdnnHandle_t handle) {
+  HIPDNN_CHECK(hipdnnSetStream(handle, c10::hip::getCurrentHIPStream()));
+}
+
+template <>
+hipdnn_frontend::DataType getDataType<hipdnn_frontend::DataType>(
+    const at::Tensor& tensor) {
+  switch (tensor.scalar_type()) {
+    case at::kFloat:
+      return hipdnn_frontend::DataType::FLOAT;
+    case at::kHalf:
+      return hipdnn_frontend::DataType::HALF;
+    case at::kBFloat16:
+      return hipdnn_frontend::DataType::BFLOAT16;
+    default:
+      TORCH_CHECK(
+          false,
+          "getDataType<hipdnn_frontend::DataType>() not supported for ",
+          toString(tensor.scalar_type()));
+  }
+}
+
+namespace {
+
+inline std::shared_ptr<hipdnn_frontend::graph::TensorAttributes>
+createTensorAttributes(const Tensor& t) {
+  auto tensor = std::make_shared<hipdnn_frontend::graph::TensorAttributes>();
+  tensor->set_dim(t.sizes().vec())
+      .set_data_type(getDataType<hipdnn_frontend::DataType>(t));
+  tensor->set_stride(t.strides().vec());
+  return tensor;
+}
+
+// Picks the memory format hipDNN should run with. hipDNN supports
+// channels-last natively, so we honor the user's tensor layout for fp32 /
+// fp16 / bf16. The combined miopen_conv_suggest_memory_format helper in
+// ConvUtils.h returns the same answer for the rocm-dnn path with
+// userEnabledHipdnn() set, but inlining here keeps Conv_hipdnn.cpp free of
+// runtime-flag reads it doesn't need.
+inline at::MemoryFormat hipdnn_suggest_memory_format(
+    const Tensor& input,
+    const Tensor& weight) {
+  if (input.scalar_type() == at::kDouble ||
+      weight.scalar_type() == at::kDouble) {
+    return at::MemoryFormat::Contiguous;
+  }
+  return _conv_suggest_memory_format_impl(input, weight, /*enabled=*/true);
+}
+
+} // namespace
+
 
 // ---------------------------------------------------------------------------
 // Cache key: captures everything that determines graph topology
@@ -73,7 +188,7 @@ static void setHipdnnConvParams(
     IntArrayRef output_size = {}) {
   memset(params, 0, sizeof(*params));
   params->device_id = input.device().index();
-  params->dataType = getHipdnnDataType(input);
+  params->dataType = getDataType<hipdnn_frontend::DataType>(input);
   params->input_dim = static_cast<uint8_t>(input.dim());
   params->memory_format = memory_format;
   params->groups = groups;
@@ -235,7 +350,7 @@ static HipdnnConvCachedGraph buildConvFpropGraph(
     IntArrayRef stride,
     IntArrayRef dilation) {
 
-  auto inputType = getHipdnnDataType(input);
+  auto inputType = getDataType<hipdnn_frontend::DataType>(input);
   auto graph = std::make_shared<hipdnn_frontend::graph::Graph>();
   graph->set_io_data_type(inputType)
       .set_intermediate_data_type(hipdnn_frontend::DataType::FLOAT)
@@ -290,7 +405,7 @@ static HipdnnConvCachedGraph buildConvDgradGraph(
     IntArrayRef stride,
     IntArrayRef dilation) {
 
-  auto inputType = getHipdnnDataType(grad_output);
+  auto inputType = getDataType<hipdnn_frontend::DataType>(grad_output);
   auto graph = std::make_shared<hipdnn_frontend::graph::Graph>();
   graph->set_io_data_type(inputType)
       .set_intermediate_data_type(hipdnn_frontend::DataType::FLOAT)
@@ -343,7 +458,7 @@ static HipdnnConvCachedGraph buildConvWgradGraph(
     IntArrayRef stride,
     IntArrayRef dilation) {
 
-  auto inputType = getHipdnnDataType(input);
+  auto inputType = getDataType<hipdnn_frontend::DataType>(input);
   auto graph = std::make_shared<hipdnn_frontend::graph::Graph>();
   // No set_intermediate_data_type needed: single-op graph has no virtual tensors.
   graph->set_io_data_type(inputType)
@@ -397,7 +512,7 @@ static void runHipdnnConvFprop(
         "hipDNN does not currently support algorithm search.");
   }
 
-  auto handle = getHipdnnHandle();
+  auto handle = getHandle<hipdnnHandle_t>();
   auto* cache = getHipdnnConvCache();
 
   bool has_bias = bias != nullptr;
@@ -450,7 +565,7 @@ static void runHipdnnConvDgrad(
         "hipDNN does not currently support algorithm search.");
   }
 
-  auto handle = getHipdnnHandle();
+  auto handle = getHandle<hipdnnHandle_t>();
   auto* cache = getHipdnnConvCache();
 
   bool has_bias = bias != nullptr;
@@ -505,7 +620,7 @@ static void runHipdnnConvWgrad(
         "hipDNN does not currently support algorithm search.");
   }
 
-  auto handle = getHipdnnHandle();
+  auto handle = getHandle<hipdnnHandle_t>();
   auto* cache = getHipdnnConvCache();
 
   HipdnnConvParams key;
@@ -551,7 +666,7 @@ Tensor hipdnn_convolution(
   checkAllSameType(c, {input, weight});
   checkAllSameGPU(c, {input, weight});
 
-  auto memory_format = hipdnn_conv_suggest_memory_format(input_t, weight_t);
+  auto memory_format = hipdnn_suggest_memory_format(input_t, weight_t);
   auto input_c = input_t.contiguous(memory_format);
   auto weight_c = weight_t.contiguous(memory_format);
 
@@ -586,7 +701,7 @@ Tensor hipdnn_convolution_transpose(
   checkAllSameType(c, {input, weight});
   checkAllSameGPU(c, {input, weight});
 
-  auto memory_format = hipdnn_conv_suggest_memory_format(input_t, weight_t);
+  auto memory_format = hipdnn_suggest_memory_format(input_t, weight_t);
   auto input_c = input_t.contiguous(memory_format);
   auto weight_c = weight_t.contiguous(memory_format);
 
@@ -618,7 +733,7 @@ std::tuple<Tensor, Tensor, Tensor> hipdnn_convolution_backward(
     bool deterministic,
     std::array<bool, 3> output_mask) {
 
-  auto memory_format = hipdnn_conv_suggest_memory_format(input, weight);
+  auto memory_format = hipdnn_suggest_memory_format(input, weight);
   auto grad_output = grad_output_t.contiguous(memory_format);
   auto input_c = input.contiguous(memory_format);
   auto weight_c = weight.contiguous(memory_format);
@@ -665,7 +780,7 @@ std::tuple<Tensor, Tensor, Tensor> hipdnn_convolution_transpose_backward(
     bool deterministic,
     std::array<bool, 3> output_mask) {
 
-  auto memory_format = hipdnn_conv_suggest_memory_format(input, weight);
+  auto memory_format = hipdnn_suggest_memory_format(input, weight);
   auto grad_output = grad_output_t.contiguous(memory_format);
   auto input_c = input.contiguous(memory_format);
   auto weight_c = weight.contiguous(memory_format);
@@ -701,13 +816,9 @@ std::tuple<Tensor, Tensor, Tensor> hipdnn_convolution_transpose_backward(
       std::move(grad_input), std::move(grad_weight), std::move(grad_bias));
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch stub registration
-// ---------------------------------------------------------------------------
-REGISTER_CUDA_DISPATCH(hipdnn_convolution_stub, &hipdnn_convolution)
-REGISTER_CUDA_DISPATCH(hipdnn_convolution_transpose_stub, &hipdnn_convolution_transpose)
-REGISTER_CUDA_DISPATCH(hipdnn_convolution_backward_stub, &hipdnn_convolution_backward)
-REGISTER_CUDA_DISPATCH(hipdnn_convolution_transpose_backward_stub, &hipdnn_convolution_transpose_backward)
+// Dispatch routing (formerly via hipdnn_*_stub) is handled by
+// aten/src/ATen/native/miopen/Conv_dispatch.cpp; this translation unit just
+// exposes the impl helpers via Conv_helpers.h.
 
 } // namespace at::native
 

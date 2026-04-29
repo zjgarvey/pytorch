@@ -633,7 +633,7 @@ class CUDATestBase(DeviceTypeTestBase):
         cls.cudnn_version = None if cls.no_cudnn else torch.backends.cudnn.version()
 
         # Determines if hipDNN is available
-        cls.no_hipdnn = not torch.backends.hipdnn.is_available()
+        cls.no_hipdnn = not torch.backends.miopen.hipdnn_available()
 
         # Acquires the current device as the primary (test) device
         cls.primary_device = f"cuda:{torch.cuda.current_device()}"

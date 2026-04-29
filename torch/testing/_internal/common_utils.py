@@ -1628,13 +1628,13 @@ TEST_WITH_MIOPEN_SUGGEST_NHWC = os.getenv('PYTORCH_MIOPEN_SUGGEST_NHWC', '0') ==
 # Opt-in: enable hipDNN globally for the test session. Existing CUDA conv tests
 # (numerics, gradcheck, channels_last, decomp, OpInfo) then run against hipdnn
 # instead of MIOpen on ROCm without per-test changes. Activation happens in
-# TestCase.run() via torch.backends.hipdnn.flags(), since direct mutation of the
-# global flag is forbidden after disable_global_flags() above.
+# TestCase.run() via torch.backends.miopen.flags(use_hipdnn=True), since direct
+# mutation of the global flag is forbidden after disable_global_flags() above.
 TEST_WITH_HIPDNN: bool = TestEnvironment.def_flag(
     "TEST_WITH_HIPDNN",
     env_var="PYTORCH_TEST_WITH_HIPDNN",
 )
-if TEST_WITH_HIPDNN and not torch.backends.hipdnn.is_available():
+if TEST_WITH_HIPDNN and not torch.backends.miopen.hipdnn_available():
     warnings.warn(
         "PYTORCH_TEST_WITH_HIPDNN=1 was set but hipDNN is not available; "
         "tests will run against the default backend (MIOpen on ROCm).",
@@ -3712,8 +3712,8 @@ class TestCase(expecttest.TestCase):
         with contextlib.ExitStack() as stack:
             if TEST_WITH_CROSSREF:
                 stack.enter_context(CrossRefMode())
-            if TEST_WITH_HIPDNN and torch.backends.hipdnn.is_available():
-                stack.enter_context(torch.backends.hipdnn.flags(enabled=True))
+            if TEST_WITH_HIPDNN and torch.backends.miopen.hipdnn_available():
+                stack.enter_context(torch.backends.miopen.flags(use_hipdnn=True))
             self._run_custom(
                 result=result,
             )

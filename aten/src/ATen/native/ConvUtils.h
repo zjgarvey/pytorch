@@ -1,4 +1,5 @@
 #pragma once
+#include <ATen/Context.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/TensorUtils.h>
 #include <ATen/detail/CUDAHooksInterface.h>
@@ -55,22 +56,6 @@ using miopen_convolution_transpose_backward_fn = std::tuple<at::Tensor,at::Tenso
     const at::Tensor&, const at::Tensor&, const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
     at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, std::array<bool,3>);
 
-
-// hipDNN forward (why are the other forward methods removed? TODO: resolve post merge).
-using hipdnn_convolution_fn = at::Tensor(*)(
-    const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&,
-    at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
-using hipdnn_convolution_transpose_fn = at::Tensor(*)(
-    const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&,
-    at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
-// hipDNN backward.
-using hipdnn_convolution_backward_fn = std::tuple<at::Tensor,at::Tensor,at::Tensor>(*)(
-    const at::Tensor&, const at::Tensor&, const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
-    at::IntArrayRef, int64_t, bool, bool, std::array<bool,3>);
-using hipdnn_convolution_transpose_backward_fn = std::tuple<at::Tensor,at::Tensor,at::Tensor>(*)(
-    const at::Tensor&, const at::Tensor&, const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
-    at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, std::array<bool,3>);
-
 // MKLDNN forward transpose (not a backward).
 using mkldnn_convolution_transpose_fn = Tensor(*)(const Tensor&, const Tensor&, const std::optional<Tensor>&,
     IntArrayRef, IntArrayRef, IntArrayRef, IntArrayRef, int64_t);
@@ -90,12 +75,6 @@ DECLARE_DISPATCH(conv_backward_fn, mps_convolution_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_backward_fn, miopen_convolution_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_transpose_backward_fn, miopen_convolution_transpose_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_backward_fn, miopen_depthwise_convolution_backward_stub)
-
-// hipDNN.
-DECLARE_DISPATCH(hipdnn_convolution_backward_fn, hipdnn_convolution_backward_stub)
-DECLARE_DISPATCH(hipdnn_convolution_fn, hipdnn_convolution_stub)
-DECLARE_DISPATCH(hipdnn_convolution_transpose_backward_fn, hipdnn_convolution_transpose_backward_stub)
-DECLARE_DISPATCH(hipdnn_convolution_transpose_fn, hipdnn_convolution_transpose_stub)
 
 // MKLDNN.
 DECLARE_DISPATCH(conv_backward_fn, mkldnn_convolution_backward_stub)
@@ -155,8 +134,6 @@ enum class ConvBackend {
   Xnnpack2d,
   Mps,
   MpsTranspose,
-  Hipdnn,
-  HipdnnTranspose,
 };
 
 // Overload for selecting the convolution backend from the full set of convolution inputs.
@@ -402,43 +379,26 @@ TORCH_API void _cudnn_set_conv_benchmark_empty_cache(bool enable);
 TORCH_API bool _cudnn_get_conv_benchmark_empty_cache();
 
 
+// Memory-format helper for the rocm-dnn dispatch path (the case arm
+// labelled ConvBackend::Miopen). Today this routes to either MIOpen or
+// hipDNN depending on torch.backends.miopen.use_hipdnn; the helper picks
+// the right answer for whichever impl will actually run. When MIOpen is
+// retired this collapses to the hipDNN branch.
 inline at::MemoryFormat miopen_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
-  bool enabled = at::detail::getCUDAHooks().compiledWithMIOpen() &&
-      input.scalar_type() != at::kDouble && weight.scalar_type() != at::kDouble;
-  // TODO: Remove PYTORCH_MIOPEN_SUGGEST_NHWC once ROCm officially supports NHWC in MIOpen.
-  // See https://github.com/pytorch/pytorch/issues/64427.
-  // Non-static read so tests can toggle the env var at runtime.
-  enabled &= c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
-  return _conv_suggest_memory_format_impl(input, weight, enabled);
-}
-
-inline at::MemoryFormat hipdnn_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
-  if (input.scalar_type() == at::kDouble ||
-      weight.scalar_type() == at::kDouble) {
+  if (input.scalar_type() == at::kDouble || weight.scalar_type() == at::kDouble) {
     return at::MemoryFormat::Contiguous;
   }
-
-  auto input_memory_format = input.suggest_memory_format();
-  auto weight_memory_format = weight.suggest_memory_format();
-  auto weight_ndim = weight.ndimension();
-
-  bool can_use_channels_last_2d = (weight_ndim == 4) && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast)
-  );
-  if (can_use_channels_last_2d) {
-    return at::MemoryFormat::ChannelsLast;
+  if (at::globalContext().userMiopenUseHipdnn() &&
+      at::detail::getCUDAHooks().compiledWithHipDNN()) {
+    // hipDNN supports channels-last natively; no env-var gate.
+    return _conv_suggest_memory_format_impl(input, weight, /*enabled=*/true);
   }
-
-  bool can_use_channels_last_3d = (weight_ndim == 5) && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast3d)
-  );
-  if (can_use_channels_last_3d) {
-    return at::MemoryFormat::ChannelsLast3d;
-  }
-
-  return at::MemoryFormat::Contiguous;
+  // TODO: Remove PYTORCH_MIOPEN_SUGGEST_NHWC once ROCm officially supports
+  // NHWC in MIOpen. See https://github.com/pytorch/pytorch/issues/64427.
+  // Non-static read so tests can toggle the env var at runtime.
+  bool enabled = at::detail::getCUDAHooks().compiledWithMIOpen() &&
+      c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
+  return _conv_suggest_memory_format_impl(input, weight, enabled);
 }
 
 // deprecated, but to remove would be BC-breaking

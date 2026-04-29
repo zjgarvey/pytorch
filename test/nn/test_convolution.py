@@ -39,7 +39,6 @@ from torch.testing._internal.common_device_type import (
     skipCPUIfNoMkldnn,
     skipCUDAIfMiopen,
     skipCUDAIfNoCudnn,
-    skipCUDAIfNoHipdnn,
     skipCUDAIfNoMiopen,
     skipCUDAIfRocm,
     skipCUDAIfRocmHipBlasltVersionLessThan,
@@ -53,7 +52,6 @@ from torch.testing._internal.common_dtype import (
 )
 from torch.testing._internal.common_nn import _test_module_empty_input, NNTestCase
 from torch.testing._internal.common_utils import (
-    DeterministicGuard,
     download_file,
     dtype2prec_DONTUSE,
     gradcheck,
@@ -4376,38 +4374,6 @@ class TestConvolutionNNDeviceType(NNTestCase):
         yref = c.cpu()(x)
         y = c.to(device=device)(x.to(device=device))
         self.assertEqual(yref, y, atol=5e-3, rtol=1e-4)
-
-    # === hipDNN convolution tests ===
-
-    @onlyCUDA
-    @skipCUDAIfNoHipdnn
-    @torch.backends.hipdnn.flags(enabled=True)
-    def test_conv2d_hipdnn_deterministic_error(self, device):
-        x = torch.randn(2, 64, 32, 32, device=device)
-        w = torch.randn(128, 64, 3, 3, device=device)
-        with DeterministicGuard(True):
-            with self.assertRaisesRegex(
-                RuntimeError, "hipdnn_convolution does not support deterministic"
-            ):
-                F.conv2d(x, w, padding=1)
-
-    @onlyCUDA
-    @skipCUDAIfNoHipdnn
-    def test_conv2d_hipdnn_backend_selection(self, device):
-        x = torch.randn(2, 64, 32, 32, device=device)
-        w = torch.randn(128, 64, 3, 3, device=device)
-        inputs = [x, w, None, (1,) * 2, (1,) * 2, (1,) * 2, False, (0,) * 2, 1]
-
-        with torch.backends.hipdnn.flags(enabled=True):
-            backend = torch._C._select_conv_backend(*inputs)
-        self.assertEqual(backend, torch._C._ConvBackend.Hipdnn)
-
-        # Transposed
-        w_t = torch.randn(64, 128, 3, 3, device=device)
-        inputs_t = [x, w_t, None, (1,) * 2, (0,) * 2, (1,) * 2, True, (0,) * 2, 1]
-        with torch.backends.hipdnn.flags(enabled=True):
-            backend_t = torch._C._select_conv_backend(*inputs_t)
-        self.assertEqual(backend_t, torch._C._ConvBackend.HipdnnTranspose)
 
 
 instantiate_device_type_tests(
