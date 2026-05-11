@@ -88,6 +88,15 @@ includes = [
     # PyTorch paths
     # Keep this synchronized with is_pytorch_file in hipify_python.py
     "aten/src/ATen/cuda/*",
+    # From aten/src/ATen/cudnn/: pick up the Graph* glue files we add for the
+    # hipDNN frontend (GraphUtils.h, GraphExceptions.h) plus Handle.{h,cpp}
+    # whose hipified outputs serve as the hipDNN handle pool. The rest of
+    # that directory (Descriptors, AutocastRNN, etc.) is legacy cuDNN
+    # descriptor-API code that hipDNN doesn't expose, so we don't hipify it.
+    "aten/src/ATen/cudnn/Graph*.h",
+    "aten/src/ATen/cudnn/Graph*.cpp",
+    "aten/src/ATen/cudnn/Handle.h",
+    "aten/src/ATen/cudnn/Handle.cpp",
     "aten/src/ATen/native/cuda/*",
     "aten/src/ATen/native/cudnn/*",
     "aten/src/ATen/native/quantized/cudnn/*",

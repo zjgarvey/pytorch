@@ -3391,14 +3391,12 @@ PYTORCH_SPECIFIC_MAPPINGS = collections.OrderedDict([
     ("CUDNN_GRU", "miopenGRU"),
     ("cudnnRNNMode_t", "miopenRNNMode_t"),
     ("magma_queue_create_from_cuda", "magma_queue_create_from_hip"),
-    # TODO: Remove these. They were necessary for Meta-internal builds.
-    ("cudnnHandle_t", "miopenHandle_t"),
-    ("cudnnCreate", "miopenCreate"),
-    ("cudnnDestroy", "miopenDestroy"),
-    ("cudnnSetStream", "miopenSetStream"),
-    ("cudnnTensorDescriptor_t ", "miopenTensorDescriptor_t "),
-    ("CUDNN_ENFORCE", "MIOPEN_ENFORCE"),
-    ("CUDNN_CHECK", "MIOPEN_CHECK"),
+    # Note: legacy cudnn→miopen mappings (cudnnHandle_t, cudnnCreate, etc.) were
+    # removed. They were unused — hand-written miopen files at
+    # aten/src/ATen/{,native/}miopen/ use miopenXxx names natively, and the
+    # hipified cudnn files at aten/src/ATen/native/cudnn/hip/ are gated by
+    # AT_CUDNN_ENABLED() which is false on ROCm (dead translation units).
+    # The cudnn→hipdnn replacements live in HIPDNN_GRAPH_MAPPINGS below.
     # NVSHMEM → rocSHMEM mappings (only symbols used in hipified files:
     # NVSHMEMSymmetricMemory.cpp and nvshmem_team_manager.hpp).
     ("NVSHMEM_TEAM_INVALID", "rocshmem::ROCSHMEM_TEAM_INVALID"),
@@ -3486,6 +3484,126 @@ CAFFE2_PATH_MAPPINGS = collections.OrderedDict([
     ("hip/hip/", "hip/"),
 ])
 
+# Translates the cuDNN frontend graph API to the hipDNN frontend graph API
+# (cudnn_frontend::graph::* → hipdnn_frontend::graph::*) plus the surrounding
+# PyTorch glue. Used by aten/src/ATen/native/cudnn/Conv_graph.cpp and the
+# aten/src/ATen/cudnn/Graph*.h helpers when running build_amd.py.
+#
+# IMPORTANT: this section is appended LAST to CUDA_TO_HIP_MAPPINGS. The
+# PYTORCH_MAP dict built at hipify_python.py:789-797 collapses all mappings
+# into a single dict where last-write-wins. Placement at the end is REQUIRED
+# so that entries here (e.g. cudnnHandle_t → hipdnnHandle_t) take precedence
+# over any earlier mapping for the same key.
+HIPDNN_GRAPH_MAPPINGS = collections.OrderedDict([
+    # Include header. The two libraries use different file extensions.
+    ("<cudnn_frontend.h>", "<hipdnn_frontend.hpp>"),
+
+    # Graph class names. The cuDNN library uses Pascal_snake_case; hipDNN
+    # uses CamelCase. More-specific entries must come BEFORE the
+    # cudnn_frontend namespace catch-all at the bottom of this block.
+    ("cudnn_frontend::graph::Tensor_attributes",
+     "hipdnn_frontend::graph::TensorAttributes"),
+    ("cudnn_frontend::graph::Conv_fprop_attributes",
+     "hipdnn_frontend::graph::ConvFpropAttributes"),
+    ("cudnn_frontend::graph::Conv_dgrad_attributes",
+     "hipdnn_frontend::graph::ConvDgradAttributes"),
+    ("cudnn_frontend::graph::Conv_wgrad_attributes",
+     "hipdnn_frontend::graph::ConvWgradAttributes"),
+    ("cudnn_frontend::graph::Pointwise_attributes",
+     "hipdnn_frontend::graph::PointwiseAttributes"),
+
+    # Enum class names. cuDNN suffixes with _t; hipDNN does not.
+    ("cudnn_frontend::DataType_t", "hipdnn_frontend::DataType"),
+    ("cudnn_frontend::PointwiseMode_t", "hipdnn_frontend::PointwiseMode"),
+
+    # Catch-all for the namespace itself. Must come after the
+    # cudnn_frontend::graph::* entries above so they match first.
+    ("cudnn_frontend", "hipdnn_frontend"),
+
+    # Handle, status, and error-check macros / helpers. AT_CUDNN_CHECK_WITH_*
+    # entries come before AT_CUDNN_CHECK so the longer prefix wins.
+    ("AT_CUDNN_CHECK_WITH_SHAPES", "HIPDNN_CHECK_WITH_SHAPES"),
+    ("AT_CUDNN_CHECK", "HIPDNN_CHECK"),
+    ("cudnnHandle_t", "hipdnnHandle_t"),
+    ("cudnnStatus_t", "hipdnnStatus_t"),
+    ("CUDNN_STATUS_SUCCESS", "HIPDNN_STATUS_SUCCESS"),
+    ("cudnnCreate", "hipdnnCreate"),
+    ("cudnnDestroy", "hipdnnDestroy"),
+    ("cudnnSetStream", "hipdnnSetStream"),
+    ("cudnnGetErrorString", "hipdnnGetErrorString"),
+    ("createCuDNNHandle", "createHipdnnHandle"),
+    ("destroyCuDNNHandle", "destroyHipdnnHandle"),
+    ("CudnnPoolType", "HipdnnPoolType"),
+    ("getCudnnHandle", "getHipdnnHandle"),
+    ("CUDNN_FE_CHECK", "HIPDNN_FE_CHECK"),
+    ("getCudnnFEDataType", "getHipdnnDataType"),
+
+    # PyTorch-side path renames. The Graph* helpers reuse the existing
+    # parent-branch hipdnn directory layout because their hipify outputs
+    # land in aten/src/ATen/hipdnn/ — wait, no: the design lands them at
+    # aten/src/ATen/cudnn/hip/. Map the cudnn-side include paths to the
+    # hip-side outputs.
+    ("ATen/cudnn/GraphUtils.h", "ATen/cudnn/hip/GraphUtils.h"),
+    ("ATen/cudnn/GraphExceptions.h", "ATen/cudnn/hip/GraphExceptions.h"),
+    # The cudnn-side Handle.h declares getCudnnHandle(). Hipify produces a
+    # parallel hipdnn handle pool at aten/src/ATen/cudnn/hip/Handle.{h,cpp}
+    # via the cudnnHandle_t→hipdnnHandle_t / getCudnnHandle→getHipdnnHandle
+    # entries above; the hipified Conv_graph.cpp should reference the
+    # hipified Handle.h, not the cuDNN-side one.
+    ("ATen/cudnn/Handle.h", "ATen/cudnn/hip/Handle.h"),
+    # The cudnn-side Handle.h transitively pulls in cudnn-wrapper.h which
+    # includes <cudnn.h>. The hipDNN side needs <hipdnn_frontend.hpp>
+    # instead, which provides hipdnnHandle_t.
+    ("ATen/cudnn/cudnn-wrapper.h", "hipdnn_frontend.hpp"),
+
+    # Internal symbol renames inside Conv_graph.cpp. The longer "_stub"
+    # suffix entries come first so they win the prefix match.
+    ("cudnn_graph_convolution_transpose_backward_stub",
+     "hipdnn_convolution_transpose_backward_stub"),
+    ("cudnn_graph_convolution_transpose_backward",
+     "hipdnn_convolution_transpose_backward"),
+    ("cudnn_graph_convolution_transpose_stub",
+     "hipdnn_convolution_transpose_stub"),
+    ("cudnn_graph_convolution_transpose", "hipdnn_convolution_transpose"),
+    ("cudnn_graph_convolution_backward_stub",
+     "hipdnn_convolution_backward_stub"),
+    ("cudnn_graph_convolution_backward", "hipdnn_convolution_backward"),
+    ("cudnn_graph_convolution_stub", "hipdnn_convolution_stub"),
+    ("cudnn_graph_convolution", "hipdnn_convolution"),
+    ("CudnnGraphConvCachedGraph", "HipdnnConvCachedGraph"),
+    ("CudnnGraphConvCache", "HipdnnConvCache"),
+    ("CudnnGraphConvParams", "HipdnnConvParams"),
+    ("CudnnGraphConvOp", "HipdnnConvOp"),
+    ("CudnnGraphConvUid", "HipdnnConvUid"),
+    ("getCudnnGraphConvCacheLimit", "getHipdnnConvCacheLimit"),
+    ("getCudnnGraphConvCache", "getHipdnnConvCache"),
+    ("setCudnnGraphConvParams", "setHipdnnConvParams"),
+    ("runCudnnGraphConv", "runHipdnnConv"),
+    ("cudnn_graph_conv_suggest_memory_format",
+     "hipdnn_conv_suggest_memory_format"),
+    ("cudnn_graph_max_dim", "hipdnn_max_dim"),
+    ("TORCH_CUDNN_GRAPH_CONV_LRU_CACHE_LIMIT",
+     "TORCH_HIPDNN_CONV_LRU_CACHE_LIMIT"),
+
+    # Macro gate. The cuDNN-side file uses USE_CUDNN_GRAPH_BACKEND (undefined
+    # by default on CUDA builds, so the body is dead). After hipify it
+    # becomes USE_HIPDNN, which cmake/Dependencies.cmake defines as a compile
+    # flag on ROCm builds when hipDNN is found.
+    ("USE_CUDNN_GRAPH_BACKEND", "USE_HIPDNN"),
+
+    # User-visible diagnostic strings, hand-mapped to match the wording the
+    # parent handwritten branch settled on.
+    ("cudnn graph wgrad has no bias-fuse path",
+     "hipdnn wgrad has no bias-fuse path"),
+    ("cuDNN graph API does not currently provide",
+     "hipDNN does not currently provide"),
+    ("cuDNN graph API does not currently support",
+     "hipDNN does not currently support"),
+    ("a cuDNN graph for fprop / dgrad / wgrad",
+     "a hipDNN graph for fprop / dgrad / wgrad"),
+    ("by cuDNN from tensor shapes", "by hipDNN from tensor shapes"),
+])
+
 CUDA_TO_HIP_MAPPINGS = [
     CUDA_IDENTIFIER_MAP,
     CUDA_TYPE_NAME_MAP,
@@ -3495,5 +3613,6 @@ CUDA_TO_HIP_MAPPINGS = [
     C10_MAPPINGS,
     # TODO: Remove CAFFE2_SPECIFIC_MAPPINGS and CAFFE2_PATH_MAPPINGS. See above.
     CAFFE2_SPECIFIC_MAPPINGS,
-    CAFFE2_PATH_MAPPINGS
+    CAFFE2_PATH_MAPPINGS,
+    HIPDNN_GRAPH_MAPPINGS,  # Last so its entries win on key collision.
 ]
