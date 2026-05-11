@@ -3511,14 +3511,22 @@ HIPDNN_GRAPH_MAPPINGS = collections.OrderedDict([
      "hipdnn_frontend::graph::ConvWgradAttributes"),
     ("cudnn_frontend::graph::Pointwise_attributes",
      "hipdnn_frontend::graph::PointwiseAttributes"),
+    ("cudnn_frontend::graph::Graph", "hipdnn_frontend::graph::Graph"),
 
     # Enum class names. cuDNN suffixes with _t; hipDNN does not.
     ("cudnn_frontend::DataType_t", "hipdnn_frontend::DataType"),
     ("cudnn_frontend::PointwiseMode_t", "hipdnn_frontend::PointwiseMode"),
 
-    # Catch-all for the namespace itself. Must come after the
-    # cudnn_frontend::graph::* entries above so they match first.
-    ("cudnn_frontend", "hipdnn_frontend"),
+    # Deliberately no catch-all for the cudnn_frontend namespace. A bare
+    # cudnn_frontend → hipdnn_frontend rewrite would translate names that
+    # the legacy descriptor-API files (Conv_v7.cpp, Conv_v8.cpp, RNN.cpp,
+    # MHA.cpp) use but that hipdnn_frontend doesn't expose
+    # (TensorBuilder, ConvDescBuilder, EngineConfigList, hasNumericalNote,
+    # load_from_config, check_errata, etc.). The hipified outputs of those
+    # files are dormant on ROCm (gated by AT_CUDNN_ENABLED() == 0), so a
+    # translation would silently introduce fake hipdnn_frontend symbols.
+    # The explicit cudnn_frontend::graph::* entries above cover everything
+    # this PR uses.
 
     # Handle, status, and error-check macros / helpers. AT_CUDNN_CHECK_WITH_*
     # entries come before AT_CUDNN_CHECK so the longer prefix wins.
@@ -3527,6 +3535,7 @@ HIPDNN_GRAPH_MAPPINGS = collections.OrderedDict([
     ("cudnnHandle_t", "hipdnnHandle_t"),
     ("cudnnStatus_t", "hipdnnStatus_t"),
     ("CUDNN_STATUS_SUCCESS", "HIPDNN_STATUS_SUCCESS"),
+    ("CUDNN_STATUS_NOT_SUPPORTED", "HIPDNN_STATUS_NOT_SUPPORTED"),
     ("cudnnCreate", "hipdnnCreate"),
     ("cudnnDestroy", "hipdnnDestroy"),
     ("cudnnSetStream", "hipdnnSetStream"),

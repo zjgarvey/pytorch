@@ -166,6 +166,13 @@ file(GLOB native_cuda_h CONFIGURE_DEPENDS "native/cuda/*.h" "native/cuda/*.cuh")
 file(GLOB native_cuda_linalg_cpp CONFIGURE_DEPENDS "native/cuda/linalg/*.cpp")
 file(GLOB native_hip_h CONFIGURE_DEPENDS "native/hip/*.h" "native/hip/*.cuh" "native/hip/bgemm_kernels/*.h")
 file(GLOB native_cudnn_cpp CONFIGURE_DEPENDS "native/cudnn/*.cpp")
+# Conv_graph.cpp uses the cudnn frontend graph API and is gated by
+# USE_CUDNN_GRAPH_BACKEND (undefined on CUDA by default). Conv_v8.cpp is the
+# production cuDNN entry point on CUDA. Conv_graph.cpp exists primarily to be
+# hipified into the ROCm hipDNN convolution implementation — see
+# HIPDNN_GRAPH_MAPPINGS in torch/utils/hipify/cuda_to_hip_mappings.py. Exclude
+# it from the cuDNN-side compile so we don't ship a dormant empty TU.
+list(REMOVE_ITEM native_cudnn_cpp ${CMAKE_CURRENT_SOURCE_DIR}/native/cudnn/Conv_graph.cpp)
 file(GLOB native_sparse_cuda_cu CONFIGURE_DEPENDS "native/sparse/cuda/*.cu")
 file(GLOB native_sparse_cuda_cpp CONFIGURE_DEPENDS "native/sparse/cuda/*.cpp")
 file(GLOB native_quantized_cuda_cu CONFIGURE_DEPENDS "native/quantized/cuda/*.cu")
@@ -643,6 +650,21 @@ if(USE_ROCM)
     file(GLOB native_hip_ck CONFIGURE_DEPENDS "native/hip/ck*.hip")
     exclude(ATen_HIP_SRCS "${ATen_HIP_SRCS}"
       ${native_hip_bgemm} ${native_hip_ck})
+  endif()
+
+  # hipDNN frontend glue: explicit list of hipify outputs. The cuDNN-side
+  # sources at aten/src/ATen/cudnn/Graph*.{h,cpp} and cudnn/Handle.{h,cpp} are
+  # hipified by tools/amd_build/build_amd.py (driven by HIPDNN_GRAPH_MAPPINGS
+  # in torch/utils/hipify/cuda_to_hip_mappings.py). Outputs land at
+  # cudnn/hip/. Conv_graph.cpp's hipified output is already picked up by the
+  # ${native_cudnn_hip_cpp} glob below; only the cudnn/hip/ glue needs
+  # explicit wiring here. Must be appended to ATen_HIP_SRCS BEFORE the
+  # list(APPEND all_hip_cpp ${ATen_HIP_SRCS} ...) below.
+  if(USE_HIPDNN)
+    list(APPEND ATen_HIP_SRCS
+      ${CMAKE_CURRENT_SOURCE_DIR}/cudnn/hip/Handle.cpp
+    )
+    list(APPEND ATen_HIP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/cudnn/hip)
   endif()
 
   # TODO: Codegen separate files for HIP and use those (s/cuda_generated_sources/hip_generated_sources)
