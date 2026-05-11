@@ -55,6 +55,19 @@ using miopen_convolution_transpose_backward_fn = std::tuple<at::Tensor,at::Tenso
     const at::Tensor&, const at::Tensor&, const at::Tensor&, at::IntArrayRef, at::IntArrayRef,
     at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, std::array<bool,3>);
 
+
+// hipDNN forward needs a stub since it isn't passed through via frontend aten ops.
+// No separate depthwise forward typedef required for hipDNN.
+using hipdnn_convolution_fn = at::Tensor(*)(
+    const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&,
+    at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
+using hipdnn_convolution_transpose_fn = at::Tensor(*)(
+    const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&,
+    at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
+// hipDNN backward shapes match miopen's. Aliased to avoid duplicate typedefs.
+using hipdnn_convolution_backward_fn = miopen_convolution_backward_fn;
+using hipdnn_convolution_transpose_backward_fn = miopen_convolution_transpose_backward_fn;
+
 // MKLDNN forward transpose (not a backward).
 using mkldnn_convolution_transpose_fn = Tensor(*)(const Tensor&, const Tensor&, const std::optional<Tensor>&,
     IntArrayRef, IntArrayRef, IntArrayRef, IntArrayRef, int64_t);
@@ -74,6 +87,12 @@ DECLARE_DISPATCH(conv_backward_fn, mps_convolution_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_backward_fn, miopen_convolution_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_transpose_backward_fn, miopen_convolution_transpose_backward_stub)
 DECLARE_DISPATCH(miopen_convolution_backward_fn, miopen_depthwise_convolution_backward_stub)
+
+// hipDNN.
+DECLARE_DISPATCH(hipdnn_convolution_backward_fn, hipdnn_convolution_backward_stub)
+DECLARE_DISPATCH(hipdnn_convolution_fn, hipdnn_convolution_stub)
+DECLARE_DISPATCH(hipdnn_convolution_transpose_backward_fn, hipdnn_convolution_transpose_backward_stub)
+DECLARE_DISPATCH(hipdnn_convolution_transpose_fn, hipdnn_convolution_transpose_stub)
 
 // MKLDNN.
 DECLARE_DISPATCH(conv_backward_fn, mkldnn_convolution_backward_stub)
@@ -133,6 +152,8 @@ enum class ConvBackend {
   Xnnpack2d,
   Mps,
   MpsTranspose,
+  Hipdnn,
+  HipdnnTranspose,
 };
 
 // Overload for selecting the convolution backend from the full set of convolution inputs.
@@ -385,6 +406,12 @@ inline at::MemoryFormat miopen_conv_suggest_memory_format(const at::Tensor& inpu
   // See https://github.com/pytorch/pytorch/issues/64427.
   // Non-static read so tests can toggle the env var at runtime.
   enabled &= c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
+  return _conv_suggest_memory_format_impl(input, weight, enabled);
+}
+
+inline at::MemoryFormat hipdnn_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
+  bool enabled = at::detail::getCUDAHooks().compiledWithHipDNN() &&
+      input.scalar_type() != at::kDouble && weight.scalar_type() != at::kDouble;
   return _conv_suggest_memory_format_impl(input, weight, enabled);
 }
 
